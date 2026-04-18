@@ -1,0 +1,15 @@
+{
+  "participants": [
+    { "name": "Me" },
+    { "name": "Friend" }
+  ],
+  "messages": [
+    {
+      "sender_name": "Friend",
+      "timestamp_ms": 1713460800000,
+      "content": "Welcome to your permanent Instagram Archive! Paste your JSON content here.",
+      "type": "Generic"
+    }
+  ],
+  "title": "My Permanent Conversation"
+}
