@@ -83,53 +83,58 @@ export default function App() {
     setLoading(true);
     
     const loadData = async () => {
-      if (chatId) {
-        // Shared link logic (Single file from server)
-        try {
-          const res = await fetch(`/api/chat/${chatId}`);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
+
+      try {
+        if (chatId) {
+          // Shared link logic (Single file from server)
+          const res = await fetch(`/api/chat/${chatId}`, { signal: controller.signal });
+          if (!res.ok) throw new Error("Shared archive not found.");
           const json = await res.json();
           if (json.error) throw new Error(json.error);
           setData(mergeAndSortMessages([json]));
           if (json.participants?.length > 0) setMeName(json.participants[0].name);
-        } catch (err) {
-          alert("Shared archive not found.");
-        } finally {
-          setLoading(false);
+          return;
         }
-        return;
-      }
 
-      // Default logic: Try loading multiple parts from /data/message_X.json
-      const parts: InstagramExport[] = [];
-      let index = 1;
-      let hasMore = true;
+        // Default logic: Try loading multiple parts from /data/message_X.json
+        const parts: InstagramExport[] = [];
+        let index = 1;
+        let hasMore = true;
 
-      while (hasMore && index <= 50) { // Limit to 50 files for safety
-        try {
-          const res = await fetch(`/data/message_${index}.json`);
-          if (!res.ok) {
-            // Fallback: try root chat_data.json if message_1 doesn't exist
-            if (index === 1) {
-              const rootRes = await fetch('/chat_data.json');
-              if (rootRes.ok) parts.push(await rootRes.json());
+        while (hasMore && index <= 50) { // Limit to 50 files for safety
+          try {
+            const res = await fetch(`/data/message_${index}.json`, { signal: controller.signal });
+            if (!res.ok) {
+              // Fallback: try root chat_data.json if message_1 doesn't exist
+              if (index === 1) {
+                const rootRes = await fetch('/chat_data.json', { signal: controller.signal });
+                if (rootRes.ok) parts.push(await rootRes.json());
+              }
+              hasMore = false;
+              break;
             }
+            const part = await res.json();
+            parts.push(part);
+            index++;
+          } catch (e) {
             hasMore = false;
-            break;
           }
-          const part = await res.json();
-          parts.push(part);
-          index++;
-        } catch (e) {
-          hasMore = false;
         }
-      }
 
-      if (parts.length > 0) {
-        const merged = mergeAndSortMessages(parts);
-        setData(merged);
-        if (merged.participants.length > 0) setMeName(merged.participants[0].name);
+        if (parts.length > 0) {
+          const merged = mergeAndSortMessages(parts);
+          setData(merged);
+          if (merged.participants.length > 0) setMeName(merged.participants[0].name);
+        }
+      } catch (err) {
+        console.error("Load error:", err);
+        if (chatId) alert("Failed to retrieve shared archive.");
+      } finally {
+        clearTimeout(timeoutId);
+        setLoading(false);
       }
-      setLoading(false);
     };
 
     loadData();
@@ -138,28 +143,39 @@ export default function App() {
   const mergeAndSortMessages = (archives: InstagramExport[]): InstagramExport => {
     if (archives.length === 0) return { participants: [], messages: [], title: "" };
     
-    const allMessages: Message[] = [];
+    let allMessages: Message[] = [];
     const participantsSet = new Set<string>();
     let title = archives[0].title || "Merged Archive";
 
     archives.forEach(arc => {
-      if (arc.messages) allMessages.push(...arc.messages);
-      if (arc.participants) arc.participants.forEach(p => participantsSet.add(p.name));
+      if (arc.messages) {
+        // Safe way to combine large arrays
+        allMessages = allMessages.concat(arc.messages);
+      }
+      if (arc.participants) {
+        arc.participants.forEach(p => participantsSet.add(p.name));
+      }
     });
 
-    // Deduplicate by timestamp and content (sometimes Instagram has overlaps)
-    const uniqueMessages = Array.from(new Map(
-      allMessages.map(m => [`${m.timestamp_ms}-${m.content}-${m.sender_name}`, m])
-    ).values());
+    // Deduplicate by timestamp and content
+    // We use a Map for O(n) deduplication
+    const messageMap = new Map<string, Message>();
+    for (const m of allMessages) {
+      const key = `${m.timestamp_ms}-${m.content}-${m.sender_name}`;
+      if (!messageMap.has(key)) {
+        messageMap.set(key, m);
+      }
+    }
+    
+    const uniqueMessages = Array.from(messageMap.values());
 
-    // IMPORTANT: Sort Chronologically (Smallest timestamp to Largest)
-    // Instagram JSON is usually newest-first, but chat windows are oldest-first.
-    const sorted = uniqueMessages.sort((a, b) => a.timestamp_ms - b.timestamp_ms);
+    // Sort Chronologically (Oldest to Newest)
+    uniqueMessages.sort((a, b) => a.timestamp_ms - b.timestamp_ms);
 
     return {
       title,
       participants: Array.from(participantsSet).map(name => ({ name })),
-      messages: sorted
+      messages: uniqueMessages
     };
   };
 
