@@ -75,63 +75,122 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
 
-  // Check for shared ID in URL on load
+  // Auto-merge multiple files on load
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const chatId = params.get('chat');
     
     setLoading(true);
     
-    const fetchPath = chatId ? `/api/chat/${chatId}` : '/chat_data.json';
-
-    fetch(fetchPath)
-      .then(res => {
-        if (!res.ok) throw new Error("File not found");
-        return res.json();
-      })
-      .then(json => {
-        if (json.error) throw new Error(json.error);
-        setData(json);
-        if (json.participants && json.participants.length > 0) {
-          setMeName(json.participants[0].name);
+    const loadData = async () => {
+      if (chatId) {
+        // Shared link logic (Single file from server)
+        try {
+          const res = await fetch(`/api/chat/${chatId}`);
+          const json = await res.json();
+          if (json.error) throw new Error(json.error);
+          setData(mergeAndSortMessages([json]));
+          if (json.participants?.length > 0) setMeName(json.participants[0].name);
+        } catch (err) {
+          alert("Shared archive not found.");
+        } finally {
+          setLoading(false);
         }
-      })
-      .catch(err => {
-        // If it's just the default file missing, we don't alert, just show upload screen
-        if (!chatId) console.log("No default chat_data.json found. Showing upload screen.");
-        else alert("Shared archive not found.");
-      })
-      .finally(() => setLoading(false));
+        return;
+      }
+
+      // Default logic: Try loading multiple parts from /data/message_X.json
+      const parts: InstagramExport[] = [];
+      let index = 1;
+      let hasMore = true;
+
+      while (hasMore && index <= 50) { // Limit to 50 files for safety
+        try {
+          const res = await fetch(`/data/message_${index}.json`);
+          if (!res.ok) {
+            // Fallback: try root chat_data.json if message_1 doesn't exist
+            if (index === 1) {
+              const rootRes = await fetch('/chat_data.json');
+              if (rootRes.ok) parts.push(await rootRes.json());
+            }
+            hasMore = false;
+            break;
+          }
+          const part = await res.json();
+          parts.push(part);
+          index++;
+        } catch (e) {
+          hasMore = false;
+        }
+      }
+
+      if (parts.length > 0) {
+        const merged = mergeAndSortMessages(parts);
+        setData(merged);
+        if (merged.participants.length > 0) setMeName(merged.participants[0].name);
+      }
+      setLoading(false);
+    };
+
+    loadData();
   }, []);
 
-  const handleFileUpload = useCallback((files: FileList | null) => {
-    if (!files || files.length === 0) return;
-    const file = files[0];
+  const mergeAndSortMessages = (archives: InstagramExport[]): InstagramExport => {
+    if (archives.length === 0) return { participants: [], messages: [], title: "" };
     
-    if (file.type !== 'application/json' && !file.name.endsWith('.json')) {
-      alert('Please upload a JSON file from your Instagram export.');
-      return;
+    const allMessages: Message[] = [];
+    const participantsSet = new Set<string>();
+    let title = archives[0].title || "Merged Archive";
+
+    archives.forEach(arc => {
+      if (arc.messages) allMessages.push(...arc.messages);
+      if (arc.participants) arc.participants.forEach(p => participantsSet.add(p.name));
+    });
+
+    // Deduplicate by timestamp and content (sometimes Instagram has overlaps)
+    const uniqueMessages = Array.from(new Map(
+      allMessages.map(m => [`${m.timestamp_ms}-${m.content}-${m.sender_name}`, m])
+    ).values());
+
+    // IMPORTANT: Sort Chronologically (Smallest timestamp to Largest)
+    // Instagram JSON is usually newest-first, but chat windows are oldest-first.
+    const sorted = uniqueMessages.sort((a, b) => a.timestamp_ms - b.timestamp_ms);
+
+    return {
+      title,
+      participants: Array.from(participantsSet).map(name => ({ name })),
+      messages: sorted
+    };
+  };
+
+  const handleFileUpload = useCallback(async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    
+    setLoading(true);
+    const parts: InstagramExport[] = [];
+
+    for (const file of Array.from(files)) {
+      if (file.type === 'application/json' || file.name.endsWith('.json')) {
+        const text = await file.text();
+        try {
+          const json = JSON.parse(text) as InstagramExport;
+          if (json.messages && json.participants) {
+            parts.push(json);
+          }
+        } catch (err) {
+          console.error(`Failed to parse ${file.name}`);
+        }
+      }
     }
 
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const json = JSON.parse(e.target?.result as string) as InstagramExport;
-        // Basic validation
-        if (!json.messages || !json.participants) {
-          throw new Error('Invalid Instagram JSON format');
-        }
-        setData(json);
-        // Default "Me" to the first participant found (usually you)
-        if (json.participants.length > 0) {
-          setMeName(json.participants[0].name);
-        }
-      } catch (err) {
-        alert('Failed to parse the file. Please make sure it is a valid Instagram chat export.');
-        console.error(err);
-      }
-    };
-    reader.readAsText(file);
+    if (parts.length > 0) {
+      const merged = mergeAndSortMessages(parts);
+      setData(merged);
+      if (merged.participants.length > 0) setMeName(merged.participants[0].name);
+    } else {
+      alert("No valid Instagram JSON files found in selection.");
+    }
+    setLoading(false);
   }, []);
 
   const handleShare = async () => {
@@ -232,6 +291,7 @@ export default function App() {
               const input = document.createElement('input');
               input.type = 'file';
               input.accept = '.json';
+              input.multiple = true;
               input.onchange = (e) => handleFileUpload((e.target as HTMLInputElement).files);
               input.click();
             }}
@@ -296,6 +356,7 @@ export default function App() {
               const input = document.createElement('input');
               input.type = 'file';
               input.accept = '.json';
+              input.multiple = true;
               input.onchange = (e) => handleFileUpload((e.target as HTMLInputElement).files);
               input.click();
             }}
