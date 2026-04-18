@@ -288,14 +288,24 @@ export default function App() {
   const filteredMessages = useMemo(() => {
     if (!data) return [];
     
-    // If searching, search EVERYTHING for speed of finding info
+    // If searching, search EVERYTHING but Limit results to prevent DOM crash
     if (searchTerm) {
       const lowerSearch = searchTerm.toLowerCase();
-      return data.messages.filter(msg => {
+      const matches: Message[] = [];
+      
+      // We iterate and break once we hit a safe UI limit (e.g. 300 results)
+      // This is a "Partial Virtualization" technique
+      for (const msg of data.messages) {
         const content = fixEncoding(msg.content).toLowerCase();
         const sender = fixEncoding(msg.sender_name).toLowerCase();
-        return content.includes(lowerSearch) || sender.includes(lowerSearch);
-      });
+        
+        if (content.includes(lowerSearch) || sender.includes(lowerSearch)) {
+          matches.push(msg);
+        }
+        
+        if (matches.length >= 300) break; 
+      }
+      return matches;
     }
 
     // Otherwise, ONLY render the selected day to prevent lag
@@ -564,21 +574,53 @@ export default function App() {
 
               {searchTerm && (
                 <div className="mb-8 bg-[#ffda58] border-4 border-black p-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
-                  <p className="font-black uppercase text-sm italic">Showing Search Results: {filteredMessages.length} Matches</p>
+                  <p className="font-black uppercase text-sm italic">
+                    Search Results {filteredMessages.length === 300 ? '(Limited to first 300 matches)' : `: ${filteredMessages.length} Matches`}
+                  </p>
                 </div>
               )}
 
               {filteredMessages.length === 0 ? (
                 <div className="bg-white border-4 border-black p-12 text-center shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] mt-20">
-                  <p className="text-xl font-black uppercase">No records for this selection.</p>
+                  <p className="text-xl font-black uppercase">No records found for "{searchTerm || selectedDate}".</p>
                 </div>
               ) : (
                 filteredMessages.map((msg, idx) => {
                   const isMe = msg.sender_name === meName;
                   const sender = fixEncoding(msg.sender_name);
                   const content = fixEncoding(msg.content);
-                  // We can skip heavy showTimestamp checks now because we show by day, 
-                  // but hourly grouping is still nice.
+                  
+                  // In Search Mode, we show the full date and a "Jump" button
+                  if (searchTerm) {
+                    const msgDate = new Date(msg.timestamp_ms).toISOString().split('T')[0];
+                    return (
+                      <div key={idx} className="mb-6 flex flex-col items-stretch">
+                        <div className="flex items-center justify-between mb-2">
+                           <span className="text-[10px] font-black uppercase text-gray-400">
+                             {formatDate(msg.timestamp_ms)}
+                           </span>
+                           <button 
+                            onClick={() => {
+                              setSelectedDate(msgDate);
+                              setSearchTerm('');
+                              // Let the UI render, then scroll is handled by scroll-smooth
+                            }}
+                            className="bg-black text-[#ffda58] px-2 py-0.5 text-[9px] font-black uppercase border border-black hover:bg-[#ff90e8] hover:text-black transition-all"
+                           >
+                             Jump to Day
+                           </button>
+                        </div>
+                        <div className={`
+                          bubble border-2 border-black p-4 max-w-full text-sm font-bold leading-relaxed
+                          ${isMe ? 'bg-[#ff90e8] rounded-xl self-end' : 'bg-white rounded-xl self-start'}
+                        `}>
+                          <span className="block text-[10px] opacity-40 mb-1">{sender}</span>
+                          <p className="break-words whitespace-pre-wrap">{content}</p>
+                        </div>
+                      </div>
+                    );
+                  }
+
                   const showTimestamp = idx === 0 || (msg.timestamp_ms - filteredMessages[idx-1].timestamp_ms > 3600000);
 
                   return (
